@@ -6,7 +6,7 @@ from datetime import datetime
 import numpy as np
 
 # --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="Pocket Analyst V5", layout="mobile", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Pocket Analyst V5", layout="centered", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
