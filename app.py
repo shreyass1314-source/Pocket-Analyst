@@ -6,171 +6,197 @@ from datetime import datetime
 import numpy as np
 
 # --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="Pocket Analyst V5", layout="centered", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Pocket Analyst V6", layout="centered", initial_sidebar_state="collapsed")
 
+# Custom CSS for "Midnight Blue" Theme (Better Visibility)
 st.markdown("""
     <style>
-    .stApp { background-color: #000000; }
-    .header { color: #00FFAA; font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 20px; }
-    .warning-box { background-color: #3d0c0c; border: 1px solid #ff4b4b; padding: 15px; border-radius: 8px; color: #ffcccc; margin-bottom: 10px; }
-    .success-box { background-color: #0c3d21; border: 1px solid #00ffaa; padding: 15px; border-radius: 8px; color: #ccffdd; margin-bottom: 10px; }
-    .metric-value { font-size: 20px; color: #fff; font-weight: 600; }
-    .news-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
+    .stApp { background-color: #0e1117; color: #FAFAFA; }
+    .header { color: #00FFAA; font-size: 28px; font-weight: bold; text-align: center; margin-bottom: 10px; }
+    .sub-header { color: #a1a1aa; font-size: 14px; text-align: center; margin-bottom: 25px; }
+    
+    /* Cards */
+    .metric-card { background-color: #1e2530; border: 1px solid #333; padding: 15px; border-radius: 10px; margin-bottom: 10px; }
+    .success-box { background-color: #052e16; border: 1px solid #22c55e; padding: 10px; border-radius: 8px; color: #bbf7d0; }
+    .warning-box { background-color: #450a0a; border: 1px solid #ef4444; padding: 10px; border-radius: 8px; color: #fecaca; }
+    
+    /* Text */
+    .big-score { font-size: 45px; font-weight: 800; text-align: center; }
+    .cmp-text { font-size: 22px; font-weight: 600; text-align: center; color: #e4e4e7; }
+    .news-link { color: #38bdf8; text-decoration: none; font-size: 15px; font-weight: 500; }
+    .news-link:hover { text-decoration: underline; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. USER INPUTS ---
-st.markdown("<div class='header'>⚡ Pocket Analyst V5.1</div>", unsafe_allow_html=True)
+# --- 2. DATA LISTS (For the Scanner) ---
+SECTORS = {
+    "NIFTY 50 (Top Picks)": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TATASTEEL.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"],
+    "Auto Sector": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "HEROMOTOCO.NS", "EICHERMOT.NS"],
+    "Banking & Finance": ["HDFCBANK.NS", "ICICIBANK.NS", "AXISBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "BAJFINANCE.NS"],
+    "IT Sector": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS"],
+    "Metals": ["TATASTEEL.NS", "HINDALCO.NS", "JSWSTEEL.NS", "VEDL.NS", "COALINDIA.NS"]
+}
 
-col1, col2 = st.columns([2,1])
-with col1:
-    ticker = st.text_input("Ticker Symbol", value="TATASTEEL").upper()
-with col2:
-    invest_amount = st.number_input("Invest (₹)", value=10000, step=1000)
-
-symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
-
-# --- 3. THE LOGIC ENGINE ---
-def run_analysis_v5(symbol, invest_amount):
+# --- 3. HELPER FUNCTIONS ---
+def get_stock_data(symbol, period="2y"):
     try:
         stock = yf.Ticker(symbol)
-        
-        # FIX: Fetch 2 years of data so we can calculate 200 EMA
-        df = stock.history(period="2y") 
-        info = stock.info
-        
-        if df.empty: return {"error": "Invalid Ticker or No Data Found"}
+        df = stock.history(period=period)
+        if df.empty: return None, None
+        return df, stock
+    except:
+        return None, None
 
-        # A. EVENTS RADAR (Earnings Check)
-        earnings_warning = None
-        try:
-            cal = stock.calendar
-            if cal is not None and not cal.empty:
-                # Handle different calendar formats
-                next_event = cal.iloc[0, 0]
-                if isinstance(next_event, (datetime, pd.Timestamp)):
-                    days_to = (next_event.date() - datetime.now().date()).days
-                    if 0 <= days_to <= 7:
-                        earnings_warning = f"⚠️ WARNING: Earnings in {days_to} days!"
-        except:
-            pass
+def calculate_technical_score(df):
+    # Indicators
+    df['EMA_200'] = ta.ema(df['Close'], length=200)
+    df['RSI'] = ta.rsi(df['Close'], length=14)
+    
+    curr_price = df['Close'].iloc[-1]
+    rsi = df['RSI'].iloc[-1]
+    ema_200 = df['EMA_200'].iloc[-1]
+    
+    # Handle NaN (New stocks)
+    if pd.isna(ema_200): ema_200 = curr_price
+    if pd.isna(rsi): rsi = 50
 
-        # B. LIQUIDITY CHECK
-        avg_vol = info.get('averageVolume', 0)
-        # Safety: If volume data is missing, assume it's okay but warn
-        if avg_vol and avg_vol < 100000:
-            return {"error": f"❌ LIQUIDITY TRAP! Volume is too low ({avg_vol}). Cannot exit easily."}
+    # Logic
+    score = 50
+    reasons = []
+    
+    if curr_price > ema_200:
+        score += 25
+        reasons.append("✅ Bullish Trend (>200 EMA)")
+    else:
+        score -= 10
+        reasons.append("⚠️ Bearish Trend (<200 EMA)")
 
-        # C. NEWS SCANNER
-        news_list = stock.news
-        headlines = []
-        danger_flag = False
-        danger_words = ["fraud", "scam", "sebi", "plunge", "crash", "investigation", "lawsuit"]
-        
-        if news_list:
-            for item in news_list[:3]:
-                title = item.get('title', '')
-                link = item.get('link', '#')
-                headlines.append({"title": title, "link": link})
-                if any(w in title.lower() for w in danger_words):
-                    danger_flag = True
+    if 45 < rsi < 65:
+        score += 25
+        reasons.append("✅ RSI Momentum (Strong)")
+    elif rsi > 70:
+        score -= 10
+        reasons.append("⚠️ Overbought (Risk)")
+    elif rsi < 30:
+        reasons.append("⚠️ Oversold (Weak)")
 
-        # D. TECHNICALS & MATH
-        curr_price = df['Close'].iloc[-1]
-        
-        # Calculate Indicators
-        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        df['EMA_200'] = ta.ema(df['Close'], length=200)
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        
-        # Safe extraction (Handle NaN/None if data is still too short)
-        atr = df['ATR'].iloc[-1]
-        rsi = df['RSI'].iloc[-1]
-        ema_200 = df['EMA_200'].iloc[-1]
+    return score, reasons, curr_price, ema_200, rsi
 
-        # Safety Defaults if calculation failed (e.g., recent IPO)
-        if pd.isna(atr): atr = curr_price * 0.02 # Default to 2% volatility
-        if pd.isna(rsi): rsi = 50 # Default to neutral
-        
-        # E. CALCULATIONS
-        stop_loss = curr_price - (2 * atr)
-        quantity = int(invest_amount / curr_price)
-        total_risk = quantity * (curr_price - stop_loss)
+# --- 4. APP LAYOUT ---
+st.markdown("<div class='header'>⚡ Pocket Analyst V6</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-header'>Scan. Analyze. Execute.</div>", unsafe_allow_html=True)
 
-        # F. SCORING
-        score = 50
-        reasons = []
-        
-        # Check EMA only if it exists
-        if pd.notna(ema_200):
-            if curr_price > ema_200: 
-                score += 20
-                reasons.append("Trend: Bullish (Above 200 EMA)")
+# TABS for Switcher
+tab1, tab2 = st.tabs(["🔍 Analyze Stock", "📡 Find Opportunities"])
+
+# ==========================================
+# TAB 1: ANALYZE STOCK (Single Ticker)
+# ==========================================
+with tab1:
+    col1, col2 = st.columns([2,1])
+    with col1:
+        ticker = st.text_input("Ticker Symbol", value="TATASTEEL").upper()
+    with col2:
+        invest_amount = st.number_input("Invest (₹)", value=10000, step=1000)
+
+    symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
+
+    if st.button("Run Deep Analysis 🚀", use_container_width=True):
+        with st.spinner(f"Analyzing {symbol}..."):
+            df, stock = get_stock_data(symbol)
+            
+            if df is None:
+                st.error("❌ Could not fetch data. Check symbol.")
             else:
-                reasons.append("Trend: Bearish (Below 200 EMA)")
-        else:
-            reasons.append("Trend: data insufficient (Recent IPO?)")
-            
-        if 40 < rsi < 65: 
-            score += 20
-            reasons.append("Momentum: Healthy")
-            
-        if danger_flag: 
-            score -= 40
-            reasons.append("News: Negative Sentiment")
-            
-        if earnings_warning:
-            score -= 20
+                score, reasons, price, ema, rsi = calculate_technical_score(df)
+                
+                # Risk Math
+                atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+                if pd.isna(atr): atr = price * 0.02
+                stop_loss = price - (2 * atr)
+                quantity = int(invest_amount / price)
+                risk_amt = quantity * (price - stop_loss)
 
-        return {
-            "price": curr_price,
-            "score": min(max(score, 0), 100),
-            "stop_loss": stop_loss,
-            "quantity": quantity,
-            "earnings_warning": earnings_warning,
-            "headlines": headlines,
-            "reasons": reasons,
-            "total_risk": total_risk
-        }
+                # --- DISPLAY ---
+                # Score Circle
+                color = "#00FFAA" if score > 70 else "#F43F5E" if score < 40 else "#FACC15"
+                st.markdown(f"""
+                <div class='metric-card' style='text-align:center;'>
+                    <div style='color:#888; font-size:12px;'>CONFIDENCE SCORE</div>
+                    <div class='big-score' style='color:{color};'>{score}/100</div>
+                    <div class='cmp-text'>₹{round(price, 2)}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    except Exception as e:
-        return {"error": f"Analysis Error: {str(e)}"}
+                # Trade Plan
+                st.subheader("📋 Execution Plan")
+                c1, c2 = st.columns(2)
+                c1.metric("Buy Quantity", f"{quantity} Qty")
+                c2.metric("Stop Loss", f"₹{int(stop_loss)}")
+                st.info(f"🛡️ Max Risk on Trade: ₹{int(risk_amt)}")
 
-# --- 4. EXECUTION ---
-if st.button("Analyze Trade 🔍", use_container_width=True):
-    with st.spinner("Connecting to Market Data..."):
-        data = run_analysis_v5(symbol, invest_amount)
+                # Logic Reasons
+                with st.expander("See Analysis Logic", expanded=True):
+                    for r in reasons:
+                        st.write(r)
+
+                # --- NEWS SECTION (FIXED) ---
+                st.subheader("📰 Market Intel")
+                news_found = False
+                try:
+                    news = stock.news
+                    if news:
+                        for n in news[:3]:
+                            st.markdown(f"• <a href='{n['link']}' class='news-link' target='_blank'>{n['title']}</a>", unsafe_allow_html=True)
+                            news_found = True
+                except:
+                    pass
+                
+                if not news_found:
+                    # Fallback to Google News Search
+                    search_url = f"https://www.google.com/search?q={ticker}+stock+news&tbm=nws"
+                    st.markdown(f"⚠️ API News unavailable. <a href='{search_url}' class='news-link' target='_blank'>Click here to search Google News for {ticker}</a>", unsafe_allow_html=True)
+
+# ==========================================
+# TAB 2: FIND OPPORTUNITIES (Scanner)
+# ==========================================
+with tab2:
+    st.write("Select a sector to scan for High Momentum setups.")
+    selected_sector = st.selectbox("Select Sector", list(SECTORS.keys()))
+    
+    if st.button("Scan Sector 📡", use_container_width=True):
+        stock_list = SECTORS[selected_sector]
+        results = []
         
-        if "error" in data:
-            st.error(data["error"])
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, stock_sym in enumerate(stock_list):
+            status_text.text(f"Scanning {stock_sym}...")
+            df, _ = get_stock_data(stock_sym, period="1y")
+            
+            if df is not None:
+                score, reasons, price, ema, rsi = calculate_technical_score(df)
+                
+                # FILTER: Only show stocks with Score > 60 (Good setups)
+                if score >= 60:
+                    results.append({
+                        "Symbol": stock_sym.replace(".NS", ""),
+                        "Price": f"₹{int(price)}",
+                        "Score": score,
+                        "Signal": "Strong Buy" if score > 75 else "Buy"
+                    })
+            
+            progress_bar.progress((i + 1) / len(stock_list))
+            
+        status_text.empty()
+        progress_bar.empty()
+        
+        if results:
+            st.success(f"Found {len(results)} potential trades in {selected_sector}!")
+            # Convert to DataFrame for nice display
+            df_results = pd.DataFrame(results)
+            st.dataframe(df_results.style.applymap(lambda x: 'color: green' if x == 'Strong Buy' else '', subset=['Signal']), use_container_width=True, hide_index=True)
+            st.caption("Tip: Go to the 'Analyze Stock' tab to calculate position size for these matches.")
         else:
-            # SCORE DISPLAY
-            color = "#00ffaa" if data['score'] > 70 else "#ff4b4b" if data['score'] < 40 else "#cca300"
-            st.markdown(f"""
-            <div style='text-align: center;'>
-                <div style='font-size: 12px; color: #888;'>CONFIDENCE</div>
-                <div style='font-size: 50px; font-weight: bold; color: {color};'>{data['score']}/100</div>
-                <div style='font-size: 24px; color: white;'>CMP: ₹{round(data['price'], 2)}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if data['earnings_warning']:
-                st.warning(data['earnings_warning'])
-
-            st.divider()
-            
-            # THE TRADE PLAN
-            st.subheader("📋 Your Trade Plan")
-            c1, c2 = st.columns(2)
-            c1.metric("Buy Quantity", f"{data['quantity']} Shares")
-            c2.metric("Stop Loss", f"₹{int(data['stop_loss'])}")
-            
-            # Risk Context
-            st.info(f"💰 If Stop Loss hits, you lose: ₹{int(data['total_risk'])}")
-            
-            st.divider()
-            
-            # NEWS & LOGIC
-            st.caption("Recent News Headlines:")
-            for h in data['headlines']:
-                st.markdown(f"• <a href='{h['link']}' class='news-link' target='_blank'>{h['title']}</a>", unsafe_allow_html=True)
+            st.warning("No high-probability setups found in this sector right now. Market might be weak.")
