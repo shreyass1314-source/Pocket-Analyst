@@ -20,13 +20,12 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. USER INPUTS ---
-st.markdown("<div class='header'>⚡ Pocket Analyst V5</div>", unsafe_allow_html=True)
+st.markdown("<div class='header'>⚡ Pocket Analyst V5.1</div>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([2,1])
 with col1:
     ticker = st.text_input("Ticker Symbol", value="TATASTEEL").upper()
 with col2:
-    # MANUAL INVESTMENT INPUT
     invest_amount = st.number_input("Invest (₹)", value=10000, step=1000)
 
 symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
@@ -35,7 +34,9 @@ symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
 def run_analysis_v5(symbol, invest_amount):
     try:
         stock = yf.Ticker(symbol)
-        df = stock.history(period="6mo")
+        
+        # FIX: Fetch 2 years of data so we can calculate 200 EMA
+        df = stock.history(period="2y") 
         info = stock.info
         
         if df.empty: return {"error": "Invalid Ticker or No Data Found"}
@@ -45,6 +46,7 @@ def run_analysis_v5(symbol, invest_amount):
         try:
             cal = stock.calendar
             if cal is not None and not cal.empty:
+                # Handle different calendar formats
                 next_event = cal.iloc[0, 0]
                 if isinstance(next_event, (datetime, pd.Timestamp)):
                     days_to = (next_event.date() - datetime.now().date()).days
@@ -55,7 +57,8 @@ def run_analysis_v5(symbol, invest_amount):
 
         # B. LIQUIDITY CHECK
         avg_vol = info.get('averageVolume', 0)
-        if avg_vol < 100000:
+        # Safety: If volume data is missing, assume it's okay but warn
+        if avg_vol and avg_vol < 100000:
             return {"error": f"❌ LIQUIDITY TRAP! Volume is too low ({avg_vol}). Cannot exit easily."}
 
         # C. NEWS SCANNER
@@ -74,28 +77,39 @@ def run_analysis_v5(symbol, invest_amount):
 
         # D. TECHNICALS & MATH
         curr_price = df['Close'].iloc[-1]
+        
+        # Calculate Indicators
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         df['EMA_200'] = ta.ema(df['Close'], length=200)
         df['RSI'] = ta.rsi(df['Close'], length=14)
         
+        # Safe extraction (Handle NaN/None if data is still too short)
         atr = df['ATR'].iloc[-1]
         rsi = df['RSI'].iloc[-1]
         ema_200 = df['EMA_200'].iloc[-1]
+
+        # Safety Defaults if calculation failed (e.g., recent IPO)
+        if pd.isna(atr): atr = curr_price * 0.02 # Default to 2% volatility
+        if pd.isna(rsi): rsi = 50 # Default to neutral
         
         # E. CALCULATIONS
         stop_loss = curr_price - (2 * atr)
-        quantity = int(invest_amount / curr_price) # Calculate shares based on user money
-        total_risk = quantity * (curr_price - stop_loss) # How much money you lose if SL hits
+        quantity = int(invest_amount / curr_price)
+        total_risk = quantity * (curr_price - stop_loss)
 
         # F. SCORING
         score = 50
         reasons = []
         
-        if curr_price > ema_200: 
-            score += 20
-            reasons.append("Trend: Bullish (Above 200 EMA)")
+        # Check EMA only if it exists
+        if pd.notna(ema_200):
+            if curr_price > ema_200: 
+                score += 20
+                reasons.append("Trend: Bullish (Above 200 EMA)")
+            else:
+                reasons.append("Trend: Bearish (Below 200 EMA)")
         else:
-            reasons.append("Trend: Bearish (Below 200 EMA)")
+            reasons.append("Trend: data insufficient (Recent IPO?)")
             
         if 40 < rsi < 65: 
             score += 20
@@ -120,7 +134,7 @@ def run_analysis_v5(symbol, invest_amount):
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Analysis Error: {str(e)}"}
 
 # --- 4. EXECUTION ---
 if st.button("Analyze Trade 🔍", use_container_width=True):
